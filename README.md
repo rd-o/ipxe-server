@@ -1,1 +1,5 @@
-docker run -d --name ipxe --network host --cap-add NET_ADMIN --cap-add NET_RAW -v $(pwd)/tftp:/srv/tftp -v $(pwd)/www:/var/www/html ipxe-server
+```
+sudo docker stop  ipxe ; sudo docker rm ipxe
+sudo docker build -t ipxe-server .
+sudo docker run -d --name ipxe --network host --privileged ipxe-server
+```
