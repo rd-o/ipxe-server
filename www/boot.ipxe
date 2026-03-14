@@ -1,0 +1,8 @@
+#!ipxe
+
+dhcp
+
+kernel http://192.168.10.1/vmlinuz boot=live fetch=http://192.168.10.1/rootfs.img ip=dhcp
+initrd http://192.168.10.1/initrd.img
+
+boot=live fetch=http://192.168.10.1/rootfs.img
