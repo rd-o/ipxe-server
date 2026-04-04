@@ -43,6 +43,12 @@ RUN chroot /build/rootfs apt-get update && \
         firmware-linux \
         alsa-utils \
         pulseaudio \
+        gstreamer1.0-tools \
+        gstreamer1.0-plugins-base \
+        gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-bad \
+        xdotool \
+        awesome \
         && chroot /build/rootfs apt-get clean
 
 # After installing all packages, regenerate the initramfs
@@ -56,13 +62,60 @@ RUN mkdir -p /build/rootfs/etc/systemd/system/getty@tty1.service.d && \
     echo '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear %I $TERM' \
     > /build/rootfs/etc/systemd/system/getty@tty1.service.d/autologin.conf
 
-# Create .xinitrc to launch mpv fullscreen
-RUN echo '#!/bin/sh\nmpv --fs http://192.168.10.1/video.mp4' > /build/rootfs/root/.xinitrc && \
+# Create .xinitrc for mpv mode (fullscreen video)
+RUN echo '#!/bin/sh\nmpv --fs --no-border --keepaspect=no http://192.168.10.1/video.mp4' > /build/rootfs/root/.xinitrc && \
     chmod +x /build/rootfs/root/.xinitrc
 
+# Create .xinitrc for awesomewm mode
+RUN echo '#!/bin/sh\n\
+exec awesome' > /build/rootfs/root/.xinitrc.awesome && \
+    chmod +x /build/rootfs/root/.xinitrc.awesome
+
+# Create awesomewm config for video reception
+RUN mkdir -p /build/rootfs/root/.config/awesome && \
+    printf '\
+beautiful.init(\"/usr/share/awesome/themes/default/theme.lua\")\n\
+beautiful.wallpaper_bg_color = 0x00000000\n\
+\n\
+local hotkeys_popup = require("awful.hotkeys_popup").widget\n\
+local mylauncher = require("awful.widget.launcher")\n\
+\n\
+local tag_names = { "Receiver" }\n\
+for s = 1, screen.count() do\
+    screen[s]:connect_signal("arranged", function(scr)\
+        local geom = scr.workarea\
+        local tag = tag_names[1]\
+        for i, t in ipairs(screen[scr.index]:tags()) do\
+            t:view_only()\
+        end\
+    end)\
+end\
+\n\
+-- Autostart receiver.sh on login\
+awful.spawn.with_shell("/root/receiver.sh")\n\
+' > /build/rootfs/root/.config/awesome/rc.lua
+
+# Copy receiver.sh script for UDP stream reception
+COPY scripts/receiver.sh /build/rootfs/root/receiver.sh
+RUN chmod +x /build/rootfs/root/receiver.sh
+
 # Automatically start X on login (root will be logged in automatically)
-RUN echo 'if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then\n    startx\nfi' \
-    >> /build/rootfs/root/.profile
+# Select window manager via WINDOW_MANAGER env var (mpv or awesome, default: mpv)
+RUN printf '#!/bin/sh\n\
+if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then\n\
+    WM="${WINDOW_MANAGER:-mpv}"\n\
+    if [ "$WM" = "awesome" ]; then\n\
+        ln -sf /root/.xinitrc.awesome /root/.xinitrc\n\
+    else\n\
+        ln -sf /root/.xinitrc /root/.xinitrc\n\
+    fi\n\
+    startx\n\
+fi\n' > /build/rootfs/root/.profile && \
+    chmod +x /build/rootfs/root/.profile
+
+# --- Configure Xorg resolution to 800x600 ---
+RUN mkdir -p /build/rootfs/etc/X11/xorg.conf.d && \
+    printf 'Section "Screen"\n    Identifier "Screen0"\n    DefaultDepth 24\n    SubSection "Display"\n        Modes "800x600"\n    EndSubSection\nEndSection\n' > /build/rootfs/etc/X11/xorg.conf.d/10-modes.conf
 
 # --- Extract kernel and initrd from the chroot ---
 RUN cp /build/rootfs/boot/vmlinuz-* /var/www/html/vmlinuz && \
