@@ -49,6 +49,10 @@ RUN chroot /build/rootfs apt-get update && \
         gstreamer1.0-plugins-bad \
         xdotool \
         awesome \
+        python3-pip \
+        python3-requests \
+        vlc \
+        python3-vlc \
         && chroot /build/rootfs apt-get clean
 
 # After installing all packages, regenerate the initramfs
@@ -95,22 +99,11 @@ end\
 awful.spawn.with_shell("/root/receiver.sh")\n\
 ' > /build/rootfs/root/.config/awesome/rc.lua
 
-# Copy receiver.sh script for UDP stream reception
-COPY scripts/receiver.sh /build/rootfs/root/receiver.sh
-RUN chmod +x /build/rootfs/root/receiver.sh
-
 # Automatically start X on login (root will be logged in automatically)
 # Select window manager via WINDOW_MANAGER env var (mpv or awesome, default: mpv)
 RUN printf '#!/bin/sh\n\
-if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then\n\
-    WM="${WINDOW_MANAGER:-mpv}"\n\
-    if [ "$WM" = "awesome" ]; then\n\
         ln -sf /root/.xinitrc.awesome /root/.xinitrc\n\
-    else\n\
-        ln -sf /root/.xinitrc /root/.xinitrc\n\
-    fi\n\
-    startx\n\
-fi\n' > /build/rootfs/root/.profile && \
+\n' > /build/rootfs/root/.profile && \
     chmod +x /build/rootfs/root/.profile
 
 # --- Configure Xorg resolution to 800x600 ---
@@ -120,6 +113,9 @@ RUN mkdir -p /build/rootfs/etc/X11/xorg.conf.d && \
 # --- Extract kernel and initrd from the chroot ---
 RUN cp /build/rootfs/boot/vmlinuz-* /var/www/html/vmlinuz && \
     cp /build/rootfs/boot/initrd.img-* /var/www/html/initrd.img
+
+COPY slave.py /build/rootfs/root/slave.py
+RUN chmod +x /build/rootfs/root/slave.py
 
 # Build squashfs filesystem (now with .squashfs extension)
 RUN mksquashfs /build/rootfs /var/www/html/rootfs.squashfs -comp xz -e boot

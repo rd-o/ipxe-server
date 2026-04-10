@@ -2,7 +2,7 @@
 
 dhcp
 
-kernel http://192.168.10.1/vmlinuz boot=live fetch=http://192.168.10.1/rootfs.img ip=dhcp
+kernel http://192.168.10.1/vmlinuz boot=live fetch=http://192.168.10.1/rootfs.squashfs ip=dhcp
 initrd http://192.168.10.1/initrd.img
 
-boot=live fetch=http://192.168.10.1/rootfs.img
+boot=live fetch=http://192.168.10.1/rootfs.squashfs
