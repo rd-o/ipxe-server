@@ -582,4 +582,13 @@ client.connect_signal("unfocus", function(c) c.border_color = beautiful.border_n
 -- }}}
 
 -- Autostart xterm with slave.py
-awful.spawn.with_shell("xterm -e 'python3 /root/slave.py'")
+awful.spawn.with_shell("xterm -hold -e 'python3 /root/slave.py' &")
+
+-- Hide wibar for fullscreen apps
+client.connect_signal("property::fullscreen", function(c)
+    if c.fullscreen then
+        c.screen.mywibox.visible = false
+    else
+        c.screen.mywibox.visible = true
+    end
+end)

@@ -37,14 +37,16 @@ def main():
 
     # 2. Register with master
     register_url = f"{MASTER_URL}/register"
-    try:
-        resp = requests.post(register_url, json={"mac": mac}, timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-        print(f"Registered as role: {data['role']}")
-    except Exception as e:
-        print(f"Registration failed: {e}")
-        sys.exit(1)
+    while True:
+        try:
+            resp = requests.post(register_url, json={"mac": mac}, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
+            print(f"Registered as role: {data['role']}")
+            break
+        except Exception as e:
+            print(f"Cannot connect to master, retrying...")
+            time.sleep(POLL_INTERVAL)
 
     # 3. Poll /assign until we get the start command
     assign_url = f"{MASTER_URL}/assign"
