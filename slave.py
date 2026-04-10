@@ -69,12 +69,11 @@ def main():
             time.sleep(POLL_INTERVAL)
 
     # 4. Pre‑load video with VLC
-    instance = vlc.Instance("--no-audio")   # remove --no-audio if you need sound
+    instance = vlc.Instance("--no-audio", "--fullscreen")
     player = instance.media_player_new()
     media = instance.media_new(video_url)
     player.set_media(media)
-    # Optional: set fullscreen
-    # player.set_fullscreen(True)
+    player.set_fullscreen(True)
 
     # 5. Wait for the exact start time
     now = time.time()

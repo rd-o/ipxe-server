@@ -49,6 +49,7 @@ RUN chroot /build/rootfs apt-get update && \
         gstreamer1.0-plugins-bad \
         xdotool \
         awesome \
+        xterm \
         python3-pip \
         python3-requests \
         vlc \
@@ -75,34 +76,15 @@ RUN echo '#!/bin/sh\n\
 exec awesome' > /build/rootfs/root/.xinitrc.awesome && \
     chmod +x /build/rootfs/root/.xinitrc.awesome
 
-# Create awesomewm config for video reception
-RUN mkdir -p /build/rootfs/root/.config/awesome && \
-    printf '\
-beautiful.init(\"/usr/share/awesome/themes/default/theme.lua\")\n\
-beautiful.wallpaper_bg_color = 0x00000000\n\
-\n\
-local hotkeys_popup = require("awful.hotkeys_popup").widget\n\
-local mylauncher = require("awful.widget.launcher")\n\
-\n\
-local tag_names = { "Receiver" }\n\
-for s = 1, screen.count() do\
-    screen[s]:connect_signal("arranged", function(scr)\
-        local geom = scr.workarea\
-        local tag = tag_names[1]\
-        for i, t in ipairs(screen[scr.index]:tags()) do\
-            t:view_only()\
-        end\
-    end)\
-end\
-\n\
--- Autostart receiver.sh on login\
-awful.spawn.with_shell("/root/receiver.sh")\n\
-' > /build/rootfs/root/.config/awesome/rc.lua
+# Copy awesomewm config with autostart
+RUN mkdir -p /build/rootfs/root/.config/awesome
+COPY rc.lua /build/rootfs/root/.config/awesome/rc.lua
 
 # Automatically start X on login (root will be logged in automatically)
 # Select window manager via WINDOW_MANAGER env var (mpv or awesome, default: mpv)
 RUN printf '#!/bin/sh\n\
         ln -sf /root/.xinitrc.awesome /root/.xinitrc\n\
+        exec startx\n\
 \n' > /build/rootfs/root/.profile && \
     chmod +x /build/rootfs/root/.profile
 
