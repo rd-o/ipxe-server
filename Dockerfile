@@ -109,10 +109,10 @@ kernel http://192.168.10.1/vmlinuz initrd=initrd.img boot=live components ip=dhc
 initrd http://192.168.10.1/initrd.img\n\
 boot\n' > /var/www/html/boot.ipxe
 
-# Configure nginx for static file serving
+# Configure nginx for static file serving on specific IP
 RUN rm -f /etc/nginx/sites-enabled/default && \
     mkdir -p /var/www/html && \
-    printf 'server {\n    listen 80 default_server;\n    listen [::]:80 default_server;\n    root /var/www/html;\n    index index.html index.htm;\n    location / {\n        autoindex on;\n    }\n}' > /etc/nginx/sites-available/default && \
+    printf 'server {\n    listen 192.168.10.1:80;\n    root /var/www/html;\n    index index.html index.htm;\n    location / {\n        autoindex on;\n    }\n}' > /etc/nginx/sites-available/default && \
     ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default && \
     echo "iPXE Boot Server" > /var/www/html/index.html
 
