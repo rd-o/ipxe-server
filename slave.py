@@ -93,14 +93,44 @@ def main():
     print("Playback started!")
     player.play()
 
-    # 7. Keep script alive (wait for video end or Ctrl+C)
+    # 7. Keep looping video and poll for new commands
     try:
         while True:
             state = player.get_state()
-            if state in (vlc.State.Ended, vlc.State.Stopped, vlc.State.Error):
-                print("Playback finished.")
+            if state in (vlc.State.Stopped, vlc.State.Error):
+                print("Playback stopped or error.")
                 break
-            time.sleep(1)
+            if state == vlc.State.Ended:
+                print("Video ended, looping...")
+                player.play()
+            try:
+                resp = requests.get(assign_url, params={"mac": mac}, timeout=2)
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("status") == "ready":
+                    new_video_url = data["video_url"]
+                    new_start_time = data["start_time"]
+                    if new_video_url != video_url:
+                        print(f"New command received: video={new_video_url}, start_time={new_start_time}")
+                        video_url = new_video_url
+                        start_time = new_start_time
+                        media = instance.media_new(video_url)
+                        player.set_media(media)
+                        player.play()
+                    elif new_start_time != start_time:
+                        video_url = new_video_url
+                        start_time = new_start_time
+                        player.stop()
+                        now = time.time()
+                        delay = start_time - now
+                        if delay > 0:
+                            time.sleep(delay)
+                            while time.time() < start_time:
+                                pass
+                        player.play()
+            except requests.RequestException:
+                pass
+            time.sleep(POLL_INTERVAL)
     except KeyboardInterrupt:
         print("Interrupted, stopping playback.")
         player.stop()
