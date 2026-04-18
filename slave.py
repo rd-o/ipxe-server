@@ -8,6 +8,7 @@ and plays the assigned video at the given absolute start time.
 import sys
 import time
 import uuid
+import subprocess
 import requests
 import vlc
 
@@ -18,6 +19,16 @@ MASTER_URL = "http://192.168.10.1:8000"   # CHANGE THIS
 POLL_INTERVAL = 0.5                       # seconds between /assign requests
 
 time_offset = 0.0
+
+
+def prevent_sleep():
+    """Prevent monitor from sleeping and machine from powering off."""
+    try:
+        subprocess.run(["xset", "s", "off"], check=False)
+        subprocess.run(["xset", "dpms", "0", "0", "off"], check=False)
+        subprocess.run(["xset", "+dpms"], check=False)
+    except Exception:
+        pass
 
 # ----------------------------------------------------------------------
 # Helper: get MAC address
@@ -33,6 +44,8 @@ def get_mac_address():
 # Main
 # ----------------------------------------------------------------------
 def main():
+    prevent_sleep()
+
     # 1. Obtain MAC address
     mac = get_mac_address()
     print(f"Local MAC address: {mac}")
@@ -79,7 +92,7 @@ def main():
             time.sleep(POLL_INTERVAL)
 
     # 4. Pre‑load video with VLC
-    instance = vlc.Instance("--no-audio", "--fullscreen")
+    instance = vlc.Instance("--no-audio", "--fullscreen", "--loop")
     player = instance.media_player_new()
     media = instance.media_new(video_url)
     player.set_media(media)
@@ -104,13 +117,6 @@ def main():
     # 7. Keep looping video and poll for new commands
     try:
         while True:
-            state = player.get_state()
-            if state in (vlc.State.Stopped, vlc.State.Error):
-                print("Playback stopped or error.")
-                break
-            if state == vlc.State.Ended:
-                print("Video ended, looping...")
-                player.play()
             try:
                 resp = requests.get(assign_url, params={"mac": mac}, timeout=2)
                 resp.raise_for_status()
@@ -130,7 +136,6 @@ def main():
                     elif new_start_time != start_time:
                         video_url = new_video_url
                         start_time = new_start_time
-                        player.stop()
                         now = time.time() + time_offset
                         delay = start_time - now
                         if delay > 0:
@@ -140,6 +145,12 @@ def main():
                         player.play()
             except requests.RequestException:
                 pass
+
+            state = player.get_state()
+            if state in (vlc.State.Stopped, vlc.State.Error, vlc.State.Ended):
+                print("Playback stopped/error/ended, restarting...")
+                player.play()
+
             time.sleep(POLL_INTERVAL)
     except KeyboardInterrupt:
         print("Interrupted, stopping playback.")
