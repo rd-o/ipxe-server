@@ -17,6 +17,8 @@ import vlc
 MASTER_URL = "http://192.168.10.1:8000"   # CHANGE THIS
 POLL_INTERVAL = 0.5                       # seconds between /assign requests
 
+time_offset = 0.0
+
 # ----------------------------------------------------------------------
 # Helper: get MAC address
 # ----------------------------------------------------------------------
@@ -43,6 +45,10 @@ def main():
             resp.raise_for_status()
             data = resp.json()
             print(f"Registered as role: {data['role']}")
+            server_time = data.get("server_time", time.time())
+            global time_offset
+            time_offset = server_time - time.time()
+            print(f"Time offset from server: {time_offset:+.3f}s")
             break
         except Exception as e:
             print(f"Cannot connect to master, retrying...")
@@ -61,7 +67,9 @@ def main():
             if data.get("status") == "ready":
                 video_url = data["video_url"]
                 start_time = data["start_time"]
-                print(f"Received start command: video={video_url}, start_time={start_time}")
+                server_time = data.get("server_time", time.time())
+                time_offset = server_time - time.time()
+                print(f"Received start command: video={video_url}, start_time={start_time}, offset={time_offset:+.3f}s")
                 break
             else:
                 # Still waiting
@@ -78,13 +86,13 @@ def main():
     player.set_fullscreen(True)
 
     # 5. Wait for the exact start time
-    now = time.time()
+    now = time.time() + time_offset
     delay = start_time - now
     if delay > 0:
         print(f"Waiting {delay:.3f} seconds until start...")
         time.sleep(delay)
         # Small busy loop to compensate for sleep imprecision
-        while time.time() < start_time:
+        while (time.time() + time_offset) < start_time:
             pass
     else:
         print(f"Warning: start_time is in the past (by {-delay:.3f}s). Starting immediately.")
@@ -110,6 +118,8 @@ def main():
                 if data.get("status") == "ready":
                     new_video_url = data["video_url"]
                     new_start_time = data["start_time"]
+                    server_time = data.get("server_time", time.time())
+                    time_offset = server_time - time.time()
                     if new_video_url != video_url:
                         print(f"New command received: video={new_video_url}, start_time={new_start_time}")
                         video_url = new_video_url
@@ -121,11 +131,11 @@ def main():
                         video_url = new_video_url
                         start_time = new_start_time
                         player.stop()
-                        now = time.time()
+                        now = time.time() + time_offset
                         delay = start_time - now
                         if delay > 0:
                             time.sleep(delay)
-                            while time.time() < start_time:
+                            while (time.time() + time_offset) < start_time:
                                 pass
                         player.play()
             except requests.RequestException:

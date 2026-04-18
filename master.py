@@ -15,11 +15,7 @@ app = Flask(__name__)
 # Configuration
 # ----------------------------------------------------------------------
 VIDEO_ROOT = "./videos"          # directory containing 001/, 002/, ...
-MAC_TO_ROLE = {
-    "52:54:00:12:34:50": "left",
-    "52:54:00:12:34:51": "center",
-    "52:54:00:12:34:52": "right",
-}
+ROLE_ORDER = ["left", "center", "right"]
 START_DELAY = 5.0                # seconds from /start command to actual playback
 
 # ----------------------------------------------------------------------
@@ -46,16 +42,20 @@ def register():
     """
     Register a client by its MAC address.
     Expects JSON: {"mac": "xx:xx:xx:xx:xx:xx"}
+    Role is assigned deterministically from MAC hash.
     """
     data = request.get_json()
     if not data or 'mac' not in data:
         return jsonify({"error": "Missing 'mac' field"}), 400
 
     mac = data['mac'].strip().lower()
-    if mac not in MAC_TO_ROLE:
-        return jsonify({"error": f"Unknown MAC address {mac}"}), 403
 
-    role = MAC_TO_ROLE[mac]
+    if mac in registered_clients:
+        role = registered_clients[mac]["role"]
+        print(f"[RE-REGISTER] {mac} -> {role} from {get_client_ip()}")
+        return jsonify({"status": "registered", "role": role}), 200
+
+    role = ROLE_ORDER[len(registered_clients) % len(ROLE_ORDER)]
     registered_clients[mac] = {
         "role": role,
         "registered_at": time.time(),
@@ -63,6 +63,17 @@ def register():
     }
     print(f"[REGISTER] {mac} -> {role} from {get_client_ip()}")
     return jsonify({"status": "registered", "role": role}), 200
+
+    
+
+    role = ROLE_ORDER[len(registered_clients)]
+    registered_clients[mac] = {
+        "role": role,
+        "registered_at": time.time(),
+        "ip": get_client_ip()
+    }
+    print(f"[REGISTER] {mac} -> {role} from {get_client_ip()}")
+    return jsonify({"status": "registered", "role": role, "server_time": time.time()}), 200
 
 
 @app.route('/assign', methods=['GET'])
@@ -79,19 +90,24 @@ def assign():
         return jsonify({"error": "Missing 'mac' parameter"}), 400
     mac = mac.strip().lower()
 
-    if mac not in MAC_TO_ROLE:
-        return jsonify({"error": "Unknown MAC"}), 403
+    if mac not in registered_clients:
+        return jsonify({"error": "Not registered"}), 403
 
     if start_time is None or selected_set is None:
         return jsonify({"status": "waiting"}), 200
 
-    role = MAC_TO_ROLE[mac]
+    # If start time is in the past, treat as waiting for fresh start
+    if time.time() > start_time + 10:
+        return jsonify({"status": "waiting"}), 200
+
+    role = registered_clients[mac]["role"]
     video_url = f"http://{request.host}/videos/{selected_set}/{role}.mp4"
     return jsonify({
         "status": "ready",
         "video_url": video_url,
         "start_time": start_time,
-        "set": selected_set
+        "set": selected_set,
+        "server_time": time.time()
     }), 200
 
 
@@ -112,12 +128,9 @@ def start_playback():
     if not os.path.isdir(set_path):
         return jsonify({"error": f"Set directory {set_num} not found"}), 404
 
-    # Require all three clients to be registered
-    expected_macs = set(MAC_TO_ROLE.keys())
-    registered_macs = set(registered_clients.keys())
-    if not expected_macs.issubset(registered_macs):
-        missing = expected_macs - registered_macs
-        return jsonify({"error": f"Clients not registered: {missing}"}), 400
+    # Require at least one client to be registered
+    if len(registered_clients) < 1:
+        return jsonify({"error": "No clients registered"}), 400
 
     selected_set = set_num
     start_time = time.time() + START_DELAY
@@ -158,9 +171,7 @@ if __name__ == '__main__':
     # Create video root if it doesn't exist
     os.makedirs(VIDEO_ROOT, exist_ok=True)
     print("Master server starting...")
-    print("Expected MAC -> role mapping:")
-    for mac, role in MAC_TO_ROLE.items():
-        print(f"  {mac} -> {role}")
+    print("Available roles:", ", ".join(ROLE_ORDER))
     print("\nAdmin endpoints:")
     print("  POST /start   (JSON: {\"set\": \"001\"})")
     print("  GET  /status")
