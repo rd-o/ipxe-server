@@ -18,8 +18,6 @@ import vlc
 MASTER_URL = "http://192.168.10.1:8000"   # CHANGE THIS
 POLL_INTERVAL = 0.5                       # seconds between /assign requests
 
-time_offset = 0.0
-
 
 def prevent_sleep():
     """Prevent monitor from sleeping and machine from powering off."""
@@ -29,6 +27,16 @@ def prevent_sleep():
         subprocess.run(["xset", "+dpms"], check=False)
     except Exception:
         pass
+
+
+def start_ssh():
+    """Start SSH server."""
+    try:
+        subprocess.run(["pkill", "-9", "sshd"], check=False)
+        subprocess.run(["/usr/sbin/sshd"], check=False)
+    except Exception:
+        pass
+
 
 # ----------------------------------------------------------------------
 # Helper: get MAC address
@@ -40,13 +48,20 @@ def get_mac_address():
                        for i in reversed(range(6)))
     return mac_hex
 
+
 # ----------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------
 def main():
     prevent_sleep()
+    start_ssh()
 
-    # 1. Obtain MAC address
+    time_offset = 0.0
+    loop_count = 1
+    current_loop = 0
+    last_reset_trigger = 0
+    video_url = None
+
     mac = get_mac_address()
     print(f"Local MAC address: {mac}")
 
@@ -59,7 +74,6 @@ def main():
             data = resp.json()
             print(f"Registered as role: {data['role']}")
             server_time = data.get("server_time", time.time())
-            global time_offset
             time_offset = server_time - time.time()
             print(f"Time offset from server: {time_offset:+.3f}s")
             break
@@ -69,7 +83,6 @@ def main():
 
     # 3. Poll /assign until we get the start command
     assign_url = f"{MASTER_URL}/assign"
-    video_url = None
     start_time = None
     print("Waiting for master to schedule start...")
     while True:
@@ -80,23 +93,30 @@ def main():
             if data.get("status") == "ready":
                 video_url = data["video_url"]
                 start_time = data["start_time"]
+                loop_count = data.get("loop", 1)
+                last_reset_trigger = data.get("reset_trigger", 0)
                 server_time = data.get("server_time", time.time())
                 time_offset = server_time - time.time()
-                print(f"Received start command: video={video_url}, start_time={start_time}, offset={time_offset:+.3f}s")
+                print(f"Received start command: video={video_url}, start_time={start_time}, offset={time_offset:+.3f}s, loop={loop_count}")
+                current_loop = 0
                 break
             else:
-                # Still waiting
                 time.sleep(POLL_INTERVAL)
         except requests.RequestException as e:
             print(f"Polling error: {e}, retrying in {POLL_INTERVAL}s")
             time.sleep(POLL_INTERVAL)
 
     # 4. Pre‑load video with VLC
-    instance = vlc.Instance("--no-audio", "--fullscreen", "--loop")
+    instance = vlc.Instance("--no-audio", "--fullscreen", "--no-video-title-show")
     player = instance.media_player_new()
-    media = instance.media_new(video_url)
-    player.set_media(media)
     player.set_fullscreen(True)
+
+    def set_and_play(url, position=None):
+        media = instance.media_new(url)
+        player.set_media(media)
+        if position is not None:
+            player.set_time(int(position * 1000))
+        player.play()
 
     # 5. Wait for the exact start time
     now = time.time() + time_offset
@@ -104,7 +124,6 @@ def main():
     if delay > 0:
         print(f"Waiting {delay:.3f} seconds until start...")
         time.sleep(delay)
-        # Small busy loop to compensate for sleep imprecision
         while (time.time() + time_offset) < start_time:
             pass
     else:
@@ -112,7 +131,8 @@ def main():
 
     # 6. Start playback
     print("Playback started!")
-    player.play()
+    set_and_play(video_url)
+    current_loop += 1
 
     # 7. Keep looping video and poll for new commands
     try:
@@ -124,17 +144,30 @@ def main():
                 if data.get("status") == "ready":
                     new_video_url = data["video_url"]
                     new_start_time = data["start_time"]
+                    new_loop_count = data.get("loop")
+                    new_reset_trigger = data.get("reset_trigger", 0)
                     server_time = data.get("server_time", time.time())
                     time_offset = server_time - time.time()
+
+                    if new_reset_trigger != last_reset_trigger:
+                        print(f"New client connected, resetting playback...")
+                        video_url = new_video_url
+                        start_time = new_start_time
+                        loop_count = new_loop_count
+                        current_loop = 0
+                        last_reset_trigger = new_reset_trigger
+                        set_and_play(video_url)
+                        current_loop += 1
+
                     if new_video_url != video_url:
                         print(f"New command received: video={new_video_url}, start_time={new_start_time}")
                         video_url = new_video_url
                         start_time = new_start_time
-                        media = instance.media_new(video_url)
-                        player.set_media(media)
-                        player.play()
+                        loop_count = new_loop_count
+                        current_loop = 0
+                        set_and_play(video_url)
+                        current_loop += 1
                     elif new_start_time != start_time:
-                        video_url = new_video_url
                         start_time = new_start_time
                         now = time.time() + time_offset
                         delay = start_time - now
@@ -143,13 +176,32 @@ def main():
                             while (time.time() + time_offset) < start_time:
                                 pass
                         player.play()
+                        current_loop += 1
             except requests.RequestException:
                 pass
 
             state = player.get_state()
             if state in (vlc.State.Stopped, vlc.State.Error, vlc.State.Ended):
-                print("Playback stopped/error/ended, restarting...")
-                player.play()
+                if loop_count == 0 or current_loop < loop_count:
+                    print(f"Playback ended, looping (loop {current_loop}{'/' + str(loop_count) if loop_count else ''})...")
+                    set_and_play(video_url)
+                    current_loop += 1
+                else:
+                    print(f"Loops finished, requesting next video...")
+                    try:
+                        resp = requests.post(f"{MASTER_URL}/finished", json={"mac": mac}, timeout=5)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            video_url = data["video_url"]
+                            start_time = data["start_time"]
+                            loop_count = data.get("loop", 1)
+                            last_reset_trigger = data.get("reset_trigger", 0)
+                            current_loop = 0
+                            print(f"Next video: {video_url}, loop={loop_count}")
+                            set_and_play(video_url)
+                            current_loop += 1
+                    except:
+                        print(f"No more videos, stopping.")
 
             time.sleep(POLL_INTERVAL)
     except KeyboardInterrupt:

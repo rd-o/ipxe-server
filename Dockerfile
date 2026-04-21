@@ -54,6 +54,7 @@ RUN chroot /build/rootfs apt-get update && \
         python3-requests \
         vlc \
         python3-vlc \
+        openssh-server \
         && chroot /build/rootfs apt-get clean
 
 # After installing all packages, regenerate the initramfs
@@ -83,6 +84,7 @@ COPY rc.lua /build/rootfs/root/.config/awesome/rc.lua
 # Automatically start X on login (root will be logged in automatically)
 # Select window manager via WINDOW_MANAGER env var (mpv or awesome, default: mpv)
 RUN printf '#!/bin/sh\n\
+        (sleep 5 && /usr/sbin/sshd) &\n\
         ln -sf /root/.xinitrc.awesome /root/.xinitrc\n\
         exec startx\n\
 \n' > /build/rootfs/root/.profile && \
@@ -98,6 +100,11 @@ RUN cp /build/rootfs/boot/vmlinuz-* /var/www/html/vmlinuz && \
 
 COPY slave.py /build/rootfs/root/slave.py
 RUN chmod +x /build/rootfs/root/slave.py
+
+# Configure SSH for root login
+RUN sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /build/rootfs/etc/ssh/sshd_config && \
+    sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /build/rootfs/etc/ssh/sshd_config && \
+    echo ' PermitRootLogin yes' >> /build/rootfs/etc/ssh/sshd_config
 
 # Build squashfs filesystem (now with .squashfs extension)
 RUN mksquashfs /build/rootfs /var/www/html/rootfs.squashfs -comp xz -e boot

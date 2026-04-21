@@ -22,8 +22,11 @@ START_DELAY = 5.0                # seconds from /start command to actual playbac
 # Global state
 # ----------------------------------------------------------------------
 registered_clients = {}    # mac -> {"role": str, "registered_at": float}
-selected_set = None        # e.g. "001"
+current_set = None         # e.g. "001"
+next_set = "001"         # next set to play after current finishes
 start_time = None          # absolute Unix timestamp when playback should begin
+loop_count = 1            # loop value from rules.conf (default: 1)
+reset_trigger = 0          # increments when we need to reset clients
 
 # ----------------------------------------------------------------------
 # Helper functions
@@ -33,6 +36,44 @@ def get_client_ip():
     if request.headers.get('X-Forwarded-For'):
         return request.headers['X-Forwarded-For']
     return request.remote_addr
+
+
+def load_rules(set_num):
+    """Load loop count from videos/<set_num>/rules.conf."""
+    global loop_count
+    rules_file = os.path.join(VIDEO_ROOT, set_num, "rules.conf")
+    try:
+        with open(rules_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith('LOOP='):
+                    loop_count = int(line.split('=', 1)[1])
+    except FileNotFoundError:
+        loop_count = 1
+
+
+def get_next_set(current):
+    """Get next set number in order."""
+    try:
+        sets = sorted([d for d in os.listdir(VIDEO_ROOT) if os.path.isdir(os.path.join(VIDEO_ROOT, d))])
+        idx = sets.index(current) if current in sets else -1
+        next_idx = (idx + 1) % len(sets)
+        return sets[next_idx]
+    except:
+        return "001"
+
+
+def reset_playback():
+    """Reset playback state to trigger restart for all clients."""
+    global start_time, reset_trigger, current_set, next_set
+    if current_set is None:
+        current_set = "001"
+    load_rules(current_set)
+    next_set = get_next_set(current_set)
+    start_time = time.time() + 2.0
+    reset_trigger += 1
+    print(f"[RESET] Playback reset for new client, will start in 2s, loop={loop_count}, next={next_set}")
+
 
 # ----------------------------------------------------------------------
 # API endpoints
@@ -53,7 +94,7 @@ def register():
     if mac in registered_clients:
         role = registered_clients[mac]["role"]
         print(f"[RE-REGISTER] {mac} -> {role} from {get_client_ip()}")
-        return jsonify({"status": "registered", "role": role}), 200
+        return jsonify({"status": "registered", "role": role, "server_time": time.time(), "reset_trigger": reset_trigger}), 200
 
     role = ROLE_ORDER[len(registered_clients) % len(ROLE_ORDER)]
     registered_clients[mac] = {
@@ -62,18 +103,8 @@ def register():
         "ip": get_client_ip()
     }
     print(f"[REGISTER] {mac} -> {role} from {get_client_ip()}")
-    return jsonify({"status": "registered", "role": role}), 200
-
-    
-
-    role = ROLE_ORDER[len(registered_clients)]
-    registered_clients[mac] = {
-        "role": role,
-        "registered_at": time.time(),
-        "ip": get_client_ip()
-    }
-    print(f"[REGISTER] {mac} -> {role} from {get_client_ip()}")
-    return jsonify({"status": "registered", "role": role, "server_time": time.time()}), 200
+    reset_playback()
+    return jsonify({"status": "registered", "role": role, "server_time": time.time(), "reset_trigger": reset_trigger}), 200
 
 
 @app.route('/assign', methods=['GET'])
@@ -93,20 +124,21 @@ def assign():
     if mac not in registered_clients:
         return jsonify({"error": "Not registered"}), 403
 
-    if start_time is None or selected_set is None:
+    if start_time is None or current_set is None:
         return jsonify({"status": "waiting"}), 200
 
-    # If start time is in the past, treat as waiting for fresh start
     if time.time() > start_time + 10:
         return jsonify({"status": "waiting"}), 200
 
     role = registered_clients[mac]["role"]
-    video_url = f"http://{request.host}/videos/{selected_set}/{role}.mp4"
+    video_url = f"http://{request.host}/videos/{current_set}/{role}.mp4"
     return jsonify({
         "status": "ready",
         "video_url": video_url,
         "start_time": start_time,
-        "set": selected_set,
+        "set": current_set,
+        "loop": loop_count,
+        "reset_trigger": reset_trigger,
         "server_time": time.time()
     }), 200
 
@@ -117,30 +149,55 @@ def start_playback():
     Admin endpoint to trigger the synchronised start.
     Expects JSON: {"set": "001"}
     """
-    global selected_set, start_time
+    global current_set, start_time
     data = request.get_json()
     if not data or 'set' not in data:
         return jsonify({"error": "Missing 'set' field"}), 400
 
     set_num = data['set'].strip()
-    # Validate that the set directory exists
     set_path = os.path.join(VIDEO_ROOT, set_num)
     if not os.path.isdir(set_path):
         return jsonify({"error": f"Set directory {set_num} not found"}), 404
 
-    # Require at least one client to be registered
-    if len(registered_clients) < 1:
-        return jsonify({"error": "No clients registered"}), 400
+    load_rules(set_num)
 
-    selected_set = set_num
+    current_set = set_num
+    next_set = get_next_set(current_set)
     start_time = time.time() + START_DELAY
-    print(f"[START] Set {selected_set} will play at {start_time} "
-          f"(in {START_DELAY} seconds)")
+    print(f"[START] Set {current_set} will play at {start_time} "
+          f"(in {START_DELAY} seconds), loop={loop_count}, next={next_set}")
 
     return jsonify({
         "status": "start scheduled",
-        "set": selected_set,
-        "start_time": start_time
+        "set": current_set,
+        "start_time": start_time,
+        "loop": loop_count
+    }), 200
+
+
+@app.route('/finished', methods=['POST'])
+def playback_finished():
+    """
+    Called by slave when video loop finishes.
+    Returns next video URL in order.
+    """
+    global current_set, start_time, reset_trigger
+    current_set = get_next_set(current_set)
+    load_rules(current_set)
+    start_time = time.time() + START_DELAY
+    reset_trigger += 1
+
+    role = "left"
+    video_url = f"http://{request.host}/videos/{current_set}/{role}.mp4"
+
+    return jsonify({
+        "status": "next",
+        "video_url": video_url,
+        "start_time": start_time,
+        "set": current_set,
+        "loop": loop_count,
+        "reset_trigger": reset_trigger,
+        "server_time": time.time()
     }), 200
 
 
@@ -149,9 +206,11 @@ def status():
     """Return current registration and start state."""
     return jsonify({
         "registered_clients": registered_clients,
-        "selected_set": selected_set,
+        "current_set": current_set,
         "start_time": start_time,
-        "start_delay": START_DELAY
+        "start_delay": START_DELAY,
+        "loop": loop_count,
+        "reset_trigger": reset_trigger
     })
 
 
@@ -168,8 +227,8 @@ def serve_video(filename):
 # Main
 # ----------------------------------------------------------------------
 if __name__ == '__main__':
-    # Create video root if it doesn't exist
     os.makedirs(VIDEO_ROOT, exist_ok=True)
+    reset_playback()
     print("Master server starting...")
     print("Available roles:", ", ".join(ROLE_ORDER))
     print("\nAdmin endpoints:")
