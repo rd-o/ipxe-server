@@ -7,7 +7,10 @@ Serves video files and coordinates start time for three clients.
 import os
 import time
 import json
-from flask import Flask, request, jsonify, send_from_directory
+import subprocess
+import threading
+import cv2
+from flask import Flask, request, jsonify, send_from_directory, Response
 
 app = Flask(__name__)
 
@@ -27,6 +30,10 @@ next_set = "001"         # next set to play after current finishes
 start_time = None          # absolute Unix timestamp when playback should begin
 loop_count = 1            # loop value from rules.conf (default: 1)
 reset_trigger = 0          # increments when we need to reset clients
+webcam_enabled = False     # webcam stream enabled
+playback_time = None       # playback time in minutes
+webcam_device = None       # detected webcam device
+ascii_enabled = False      # ASCII art mode
 
 # ----------------------------------------------------------------------
 # Helper functions
@@ -39,17 +46,45 @@ def get_client_ip():
 
 
 def load_rules(set_num):
-    """Load loop count from videos/<set_num>/rules.conf."""
-    global loop_count
+    """Load rules from videos/<set_num>/rules.conf."""
+    global loop_count, webcam_enabled, playback_time, ascii_enabled
     rules_file = os.path.join(VIDEO_ROOT, set_num, "rules.conf")
+    webcam_enabled = False
+    playback_time = None
+    ascii_enabled = False
     try:
         with open(rules_file, 'r') as f:
             for line in f:
                 line = line.strip()
                 if line.startswith('LOOP='):
                     loop_count = int(line.split('=', 1)[1])
+                elif line.startswith('WEBCAM='):
+                    webcam_enabled = int(line.split('=', 1)[1]) == 1
+                elif line.startswith('PLAYBACK_TIME='):
+                    playback_time = int(line.split('=', 1)[1])
+                elif line.startswith('AA='):
+                    ascii_enabled = int(line.split('=', 1)[1]) == 1
     except FileNotFoundError:
         loop_count = 1
+
+
+def detect_webcam():
+    """Detect available webcam."""
+    global webcam_device
+    try:
+        result = subprocess.run(
+            ["v4l2-ctl", "--list-devices"],
+            capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.split('\n'):
+            if '/dev/video' in line:
+                for dev_line in result.stdout.split('\n'):
+                    if '/dev/video' in dev_line:
+                        webcam_device = dev_line.strip()
+                        return webcam_device
+    except Exception as e:
+        print(f"Webcam detection failed: {e}")
+    return None
 
 
 def get_next_set(current):
@@ -131,13 +166,24 @@ def assign():
         return jsonify({"status": "waiting"}), 200
 
     role = registered_clients[mac]["role"]
-    video_url = f"http://{request.host}/videos/{current_set}/{role}.mp4"
+
+    if webcam_enabled:
+        if detect_webcam() is None:
+            print(f"[WARN] No webcam detected, skipping to next set")
+            return jsonify({"status": "no_webcam", "next_set": get_next_set(current_set)}), 200
+        video_url = f"http://{request.host}/webcam"
+    else:
+        video_url = f"http://{request.host}/videos/{current_set}/{role}.mp4"
+
     return jsonify({
         "status": "ready",
         "video_url": video_url,
         "start_time": start_time,
         "set": current_set,
         "loop": loop_count,
+        "playback_time": playback_time,
+        "is_webcam": webcam_enabled,
+        "is_ascii": ascii_enabled,
         "reset_trigger": reset_trigger,
         "server_time": time.time()
     }), 200
@@ -221,6 +267,90 @@ def status():
 def serve_video(filename):
     """Serve video files from VIDEO_ROOT."""
     return send_from_directory(VIDEO_ROOT, filename)
+
+
+# ----------------------------------------------------------------------
+# Webcam streaming
+# ----------------------------------------------------------------------
+_webcam_capture = None
+_webcam_device = None
+_clients_lock = threading.Lock()
+_clients = []
+
+
+def _capture_frames():
+    """Background thread that captures frames and broadcasts to all clients."""
+    global _webcam_capture, _webcam_device
+    while True:
+        if _webcam_capture is None:
+            device = detect_webcam()
+            if device is None:
+                time.sleep(0.1)
+                continue
+            _webcam_capture = cv2.VideoCapture(device)
+            if not _webcam_capture.isOpened():
+                print(f"[ERROR] Cannot open webcam {device}")
+                _webcam_capture = None
+                time.sleep(0.1)
+                continue
+            _webcam_device = device
+            print(f"[WEBCAM] Capture started on {device}")
+
+        ret, frame = _webcam_capture.read()
+        if not ret:
+            _webcam_capture.release()
+            _webcam_capture = None
+            time.sleep(0.1)
+            continue
+
+        _, jpeg = cv2.imencode('.jpg', frame)
+        frame_bytes = jpeg.tobytes()
+
+        with _clients_lock:
+            for client in _clients[:]:
+                try:
+                    client.put(frame_bytes)
+                except:
+                    pass
+
+
+def _start_capture_thread():
+    """Start the background capture thread if not already running."""
+    if not hasattr(_start_capture_thread, 'started'):
+        thread = threading.Thread(target=_capture_frames, daemon=True)
+        thread.start()
+        _start_capture_thread.started = True
+
+
+@app.route('/webcam')
+def webcam_stream():
+    """Serve webcam MJPEG stream to a single client."""
+    import queue
+
+    _start_capture_thread()
+
+    frame_queue = queue.Queue(maxsize=2)
+    with _clients_lock:
+        _clients.append(frame_queue)
+
+    def generate():
+        try:
+            while True:
+                try:
+                    frame_bytes = frame_queue.get(timeout=5)
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                except queue.Empty:
+                    break
+        finally:
+            with _clients_lock:
+                try:
+                    _clients.remove(frame_queue)
+                except ValueError:
+                    pass
+
+    return Response(generate(),
+                   mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
 # ----------------------------------------------------------------------

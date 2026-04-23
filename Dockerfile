@@ -14,6 +14,9 @@ RUN apt-get update && apt-get install -y \
     xz-utils \
     live-boot \
     systemd-container \
+    libopencv-dev \
+    python3-opencv \
+    libcaca0 \
     && apt-get clean
 
 # Prepare directories
@@ -55,6 +58,9 @@ RUN chroot /build/rootfs apt-get update && \
         vlc \
         python3-vlc \
         openssh-server \
+        caca-utils \
+        libvlccore9 \
+        vlc-plugin-video-output \
         && chroot /build/rootfs apt-get clean
 
 # After installing all packages, regenerate the initramfs

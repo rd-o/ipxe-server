@@ -52,6 +52,55 @@ def get_mac_address():
 # ----------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------
+vlc_instance = None
+vlc_player = None
+
+
+def cleanup_vlc():
+    global vlc_instance, vlc_player
+    print("[CLEANUP] Stopping old VLC...")
+    if vlc_player:
+        try:
+            vlc_player.stop()
+            time.sleep(0.2)
+        except:
+            pass
+    if vlc_instance:
+        try:
+            vlc_instance.release()
+            time.sleep(0.2)
+        except:
+            pass
+    vlc_instance = None
+    vlc_player = None
+    for _ in range(3):
+        subprocess.run(['pkill', '-9', 'vlc'], check=False)
+        time.sleep(0.2)
+    print("[CLEANUP] Old VLC stopped")
+
+
+def create_vlc(ascii_mode):
+    global vlc_instance, vlc_player
+    vlc_opts = ["--no-audio", "--no-video-title-show"]
+    if ascii_mode:
+        try:
+            result = subprocess.run(["which", "cacaview"], capture_output=True, text=True, timeout=2)
+            if result.returncode != 0:
+                ascii_mode = False
+                print("[VLC] caca not available, using fullscreen")
+        except:
+            ascii_mode = False
+        if ascii_mode:
+            vlc_opts.extend(["--vout", "caca"])
+    else:
+        vlc_opts.append("--fullscreen")
+    vlc_instance = vlc.Instance(*vlc_opts)
+    vlc_player = vlc_instance.media_player_new()
+    if not ascii_mode:
+        vlc_player.set_fullscreen(True)
+    time.sleep(0.2)
+
+
 def main():
     prevent_sleep()
     start_ssh()
@@ -61,6 +110,10 @@ def main():
     current_loop = 0
     last_reset_trigger = 0
     video_url = None
+    playback_time = None
+    is_webcam = False
+    is_ascii = False
+    start_time_global = None
 
     mac = get_mac_address()
     print(f"Local MAC address: {mac}")
@@ -94,10 +147,14 @@ def main():
                 video_url = data["video_url"]
                 start_time = data["start_time"]
                 loop_count = data.get("loop", 1)
+                playback_time = data.get("playback_time")
+                is_webcam = data.get("is_webcam", False)
+                is_ascii = data.get("is_ascii", False)
                 last_reset_trigger = data.get("reset_trigger", 0)
                 server_time = data.get("server_time", time.time())
                 time_offset = server_time - time.time()
-                print(f"Received start command: video={video_url}, start_time={start_time}, offset={time_offset:+.3f}s, loop={loop_count}")
+                start_time_global = start_time
+                print(f"Received start command: video={video_url}, start_time={start_time}, offset={time_offset:+.3f}s, loop={loop_count}, webcam={is_webcam}, ascii={is_ascii}, playback_time={playback_time}")
                 current_loop = 0
                 break
             else:
@@ -107,16 +164,15 @@ def main():
             time.sleep(POLL_INTERVAL)
 
     # 4. Pre‑load video with VLC
-    instance = vlc.Instance("--no-audio", "--fullscreen", "--no-video-title-show")
-    player = instance.media_player_new()
-    player.set_fullscreen(True)
+    cleanup_vlc()
+    create_vlc(is_ascii)
 
     def set_and_play(url, position=None):
-        media = instance.media_new(url)
-        player.set_media(media)
+        media = vlc_instance.media_new(url)
+        vlc_player.set_media(media)
         if position is not None:
-            player.set_time(int(position * 1000))
-        player.play()
+            vlc_player.set_time(int(position * 1000))
+        vlc_player.play()
 
     # 5. Wait for the exact start time
     now = time.time() + time_offset
@@ -151,20 +207,28 @@ def main():
 
                     if new_reset_trigger != last_reset_trigger:
                         print(f"New client connected, resetting playback...")
+                        cleanup_vlc()
                         video_url = new_video_url
                         start_time = new_start_time
                         loop_count = new_loop_count
+                        is_ascii = data.get("is_ascii", False)
+                        is_webcam = data.get("is_webcam", False)
                         current_loop = 0
                         last_reset_trigger = new_reset_trigger
+                        create_vlc(is_ascii)
                         set_and_play(video_url)
                         current_loop += 1
 
-                    if new_video_url != video_url:
-                        print(f"New command received: video={new_video_url}, start_time={new_start_time}")
+                    if new_video_url != video_url or (is_ascii != data.get("is_ascii", False)):
+                        print(f"New command received: video={new_video_url}, start_time={new_start_time}, ascii={data.get('is_ascii', False)}")
+                        cleanup_vlc()
                         video_url = new_video_url
                         start_time = new_start_time
                         loop_count = new_loop_count
+                        is_ascii = data.get("is_ascii", False)
+                        is_webcam = data.get("is_webcam", False)
                         current_loop = 0
+                        create_vlc(is_ascii)
                         set_and_play(video_url)
                         current_loop += 1
                     elif new_start_time != start_time:
@@ -175,19 +239,16 @@ def main():
                             time.sleep(delay)
                             while (time.time() + time_offset) < start_time:
                                 pass
-                        player.play()
+                        vlc_player.play()
                         current_loop += 1
             except requests.RequestException:
                 pass
 
-            state = player.get_state()
-            if state in (vlc.State.Stopped, vlc.State.Error, vlc.State.Ended):
-                if loop_count == 0 or current_loop < loop_count:
-                    print(f"Playback ended, looping (loop {current_loop}{'/' + str(loop_count) if loop_count else ''})...")
-                    set_and_play(video_url)
-                    current_loop += 1
-                else:
-                    print(f"Loops finished, requesting next video...")
+            state = vlc_player.get_state()
+            if is_webcam and playback_time:
+                elapsed = time.time() - start_time_global
+                if elapsed >= playback_time * 60:
+                    print(f"Webcam playback time ({playback_time} min) reached, requesting next video...")
                     try:
                         resp = requests.post(f"{MASTER_URL}/finished", json={"mac": mac}, timeout=5)
                         if resp.status_code == 200:
@@ -195,18 +256,53 @@ def main():
                             video_url = data["video_url"]
                             start_time = data["start_time"]
                             loop_count = data.get("loop", 1)
+                            playback_time = data.get("playback_time")
+                            is_webcam = data.get("is_webcam", False)
                             last_reset_trigger = data.get("reset_trigger", 0)
                             current_loop = 0
-                            print(f"Next video: {video_url}, loop={loop_count}")
+                            start_time_global = start_time
+                            print(f"Next video: {video_url}, loop={loop_count}, webcam={is_webcam}")
+                            cleanup_vlc()
+                            create_vlc(is_ascii)
                             set_and_play(video_url)
                             current_loop += 1
                     except:
                         print(f"No more videos, stopping.")
 
+            if state in (vlc.State.Stopped, vlc.State.Error, vlc.State.Ended):
+                if not is_webcam:
+                    if loop_count == 0 or current_loop < loop_count:
+                        print(f"Playback ended, looping (loop {current_loop}{'/' + str(loop_count) if loop_count else ''})...")
+                        cleanup_vlc()
+                        create_vlc(is_ascii)
+                        set_and_play(video_url)
+                        current_loop += 1
+                    else:
+                        print(f"Loops finished, requesting next video...")
+                        try:
+                            resp = requests.post(f"{MASTER_URL}/finished", json={"mac": mac}, timeout=5)
+                            if resp.status_code == 200:
+                                data = resp.json()
+                                video_url = data["video_url"]
+                                start_time = data["start_time"]
+                                loop_count = data.get("loop", 1)
+                                playback_time = data.get("playback_time")
+                                is_webcam = data.get("is_webcam", False)
+                                last_reset_trigger = data.get("reset_trigger", 0)
+                                current_loop = 0
+                                start_time_global = start_time
+                                print(f"Next video: {video_url}, loop={loop_count}, webcam={is_webcam}")
+                                cleanup_vlc()
+                                create_vlc(is_ascii)
+                                set_and_play(video_url)
+                                current_loop += 1
+                        except:
+                            print(f"No more videos, stopping.")
+
             time.sleep(POLL_INTERVAL)
     except KeyboardInterrupt:
         print("Interrupted, stopping playback.")
-        player.stop()
+        vlc_player.stop()
 
 if __name__ == "__main__":
     main()
