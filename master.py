@@ -34,6 +34,7 @@ webcam_enabled = False     # webcam stream enabled
 playback_time = None       # playback time in minutes
 webcam_device = None       # detected webcam device
 ascii_enabled = False      # ASCII art mode
+split_enabled = False      # Split video mode (gst-launch)
 
 # ----------------------------------------------------------------------
 # Helper functions
@@ -47,11 +48,12 @@ def get_client_ip():
 
 def load_rules(set_num):
     """Load rules from videos/<set_num>/rules.conf."""
-    global loop_count, webcam_enabled, playback_time, ascii_enabled
+    global loop_count, webcam_enabled, playback_time, ascii_enabled, split_enabled
     rules_file = os.path.join(VIDEO_ROOT, set_num, "rules.conf")
     webcam_enabled = False
     playback_time = None
     ascii_enabled = False
+    split_enabled = False
     try:
         with open(rules_file, 'r') as f:
             for line in f:
@@ -64,6 +66,8 @@ def load_rules(set_num):
                     playback_time = int(line.split('=', 1)[1])
                 elif line.startswith('AA='):
                     ascii_enabled = int(line.split('=', 1)[1]) == 1
+                elif line.startswith('SPLIT='):
+                    split_enabled = int(line.split('=', 1)[1]) == 1
     except FileNotFoundError:
         loop_count = 1
 
@@ -107,6 +111,11 @@ def reset_playback():
     next_set = get_next_set(current_set)
     start_time = time.time() + 2.0
     reset_trigger += 1
+    if split_enabled:
+        video_path = os.path.join(VIDEO_ROOT, current_set, "video.mp4")
+        start_split(video_path)
+    else:
+        stop_split()
     print(f"[RESET] Playback reset for new client, will start in 2s, loop={loop_count}, next={next_set}")
 
 
@@ -167,7 +176,11 @@ def assign():
 
     role = registered_clients[mac]["role"]
 
-    if webcam_enabled:
+    if split_enabled:
+        video_path = os.path.join(VIDEO_ROOT, current_set, "video.mp4")
+        reset_split(video_path)
+        video_url = f"http://{request.host}/client"
+    elif webcam_enabled:
         if detect_webcam() is None:
             print(f"[WARN] No webcam detected, skipping to next set")
             return jsonify({"status": "no_webcam", "next_set": get_next_set(current_set)}), 200
@@ -184,6 +197,7 @@ def assign():
         "playback_time": playback_time,
         "is_webcam": webcam_enabled,
         "is_ascii": ascii_enabled,
+        "is_split": split_enabled,
         "reset_trigger": reset_trigger,
         "server_time": time.time()
     }), 200
@@ -210,6 +224,11 @@ def start_playback():
     current_set = set_num
     next_set = get_next_set(current_set)
     start_time = time.time() + START_DELAY
+    if split_enabled:
+        video_path = os.path.join(VIDEO_ROOT, current_set, "video.mp4")
+        start_split(video_path)
+    else:
+        stop_split()
     print(f"[START] Set {current_set} will play at {start_time} "
           f"(in {START_DELAY} seconds), loop={loop_count}, next={next_set}")
 
@@ -353,9 +372,65 @@ def webcam_stream():
                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
+@app.route('/client')
+def serve_client_script():
+    """Serve the client.sh script for split video mode."""
+    script_path = os.path.join(os.path.dirname(__file__), 'client.sh')
+    if not os.path.exists(script_path):
+        return "client.sh not found", 404
+    return send_from_directory(os.path.dirname(__file__), 'client.sh',
+                          mimetype='application/x-shellscript',
+                          as_attachment=True)
+
+
 # ----------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------
+import signal
+import sys
+
+main_sh_process = None
+current_split_video = None
+
+
+def stop_split():
+    global main_sh_process
+    if main_sh_process:
+        main_sh_process.terminate()
+        main_sh_process = None
+
+
+def start_split(video_path):
+    global main_sh_process, current_split_video
+    stop_split()
+    script_path = os.path.join(os.path.dirname(__file__), 'main.sh')
+    if not os.path.exists(script_path):
+        print(f"[SPLIT] main.sh not found")
+        return
+    current_split_video = video_path
+    main_sh_process = subprocess.Popen(
+        [script_path, video_path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    print(f"[SPLIT] Started streaming {video_path}")
+
+
+def reset_split(new_video_path):
+    global current_split_video
+    if current_split_video != new_video_path:
+        start_split(new_video_path)
+
+
+def signal_handler(sig, frame):
+    stop_split()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+
 if __name__ == '__main__':
     os.makedirs(VIDEO_ROOT, exist_ok=True)
     reset_playback()

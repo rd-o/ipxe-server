@@ -7,6 +7,7 @@ and plays the assigned video at the given absolute start time.
 
 import sys
 import time
+import os
 import uuid
 import subprocess
 import requests
@@ -113,6 +114,7 @@ def main():
     playback_time = None
     is_webcam = False
     is_ascii = False
+    is_split = False
     start_time_global = None
 
     mac = get_mac_address()
@@ -150,6 +152,7 @@ def main():
                 playback_time = data.get("playback_time")
                 is_webcam = data.get("is_webcam", False)
                 is_ascii = data.get("is_ascii", False)
+                is_split = data.get("is_split", False)
                 last_reset_trigger = data.get("reset_trigger", 0)
                 server_time = data.get("server_time", time.time())
                 time_offset = server_time - time.time()
@@ -163,16 +166,26 @@ def main():
             print(f"Polling error: {e}, retrying in {POLL_INTERVAL}s")
             time.sleep(POLL_INTERVAL)
 
-    # 4. Pre‑load video with VLC
-    cleanup_vlc()
-    create_vlc(is_ascii)
+    # 4. Pre‑load video with VLC or start split mode
+    if is_split:
+        print("[SPLIT] Downloading client.sh script...")
+        resp = requests.get(video_url, timeout=10)
+        resp.raise_for_status()
+        with open('/root/client.sh', 'wb') as f:
+            f.write(resp.content)
+        os.chmod('/root/client.sh', 0o755)
+        print("[SPLIT] Starting client.sh...")
+        subprocess.Popen(['/root/client.sh'])
+    else:
+        cleanup_vlc()
+        create_vlc(is_ascii)
 
-    def set_and_play(url, position=None):
-        media = vlc_instance.media_new(url)
-        vlc_player.set_media(media)
-        if position is not None:
-            vlc_player.set_time(int(position * 1000))
-        vlc_player.play()
+        def set_and_play(url, position=None):
+            media = vlc_instance.media_new(url)
+            vlc_player.set_media(media)
+            if position is not None:
+                vlc_player.set_time(int(position * 1000))
+            vlc_player.play()
 
     # 5. Wait for the exact start time
     now = time.time() + time_offset
@@ -187,8 +200,9 @@ def main():
 
     # 6. Start playback
     print("Playback started!")
-    set_and_play(video_url)
-    current_loop += 1
+    if not is_split:
+        set_and_play(video_url)
+        current_loop += 1
 
     # 7. Keep looping video and poll for new commands
     try:
@@ -207,7 +221,7 @@ def main():
 
                     if new_reset_trigger != last_reset_trigger:
                         print(f"New client connected, resetting playback...")
-                        cleanup_vlc()
+                        is_split = data.get("is_split", False)
                         video_url = new_video_url
                         start_time = new_start_time
                         loop_count = new_loop_count
@@ -215,22 +229,40 @@ def main():
                         is_webcam = data.get("is_webcam", False)
                         current_loop = 0
                         last_reset_trigger = new_reset_trigger
-                        create_vlc(is_ascii)
-                        set_and_play(video_url)
-                        current_loop += 1
+                        if is_split:
+                            subprocess.run(['pkill', '-9', '-f', 'client.sh'], check=False)
+                            resp = requests.get(video_url, timeout=10)
+                            with open('/root/client.sh', 'wb') as f:
+                                f.write(resp.content)
+                            os.chmod('/root/client.sh', 0o755)
+                            subprocess.Popen(['/root/client.sh'])
+                        else:
+                            cleanup_vlc()
+                            create_vlc(is_ascii)
+                            set_and_play(video_url)
+                            current_loop += 1
 
-                    if new_video_url != video_url or (is_ascii != data.get("is_ascii", False)):
-                        print(f"New command received: video={new_video_url}, start_time={new_start_time}, ascii={data.get('is_ascii', False)}")
-                        cleanup_vlc()
+                    if new_video_url != video_url or (is_ascii != data.get("is_ascii", False)) or (is_split != data.get("is_split", False)):
+                        print(f"New command received: video={new_video_url}, start_time={new_start_time}, ascii={data.get('is_ascii', False)}, split={data.get('is_split', False)}")
+                        is_split = data.get("is_split", False)
                         video_url = new_video_url
                         start_time = new_start_time
                         loop_count = new_loop_count
                         is_ascii = data.get("is_ascii", False)
                         is_webcam = data.get("is_webcam", False)
                         current_loop = 0
-                        create_vlc(is_ascii)
-                        set_and_play(video_url)
-                        current_loop += 1
+                        if is_split:
+                            subprocess.run(['pkill', '-9', '-f', 'client.sh'], check=False)
+                            resp = requests.get(video_url, timeout=10)
+                            with open('/root/client.sh', 'wb') as f:
+                                f.write(resp.content)
+                            os.chmod('/root/client.sh', 0o755)
+                            subprocess.Popen(['/root/client.sh'])
+                        else:
+                            cleanup_vlc()
+                            create_vlc(is_ascii)
+                            set_and_play(video_url)
+                            current_loop += 1
                     elif new_start_time != start_time:
                         start_time = new_start_time
                         now = time.time() + time_offset
@@ -239,12 +271,17 @@ def main():
                             time.sleep(delay)
                             while (time.time() + time_offset) < start_time:
                                 pass
-                        vlc_player.play()
-                        current_loop += 1
+                        if not is_split:
+                            vlc_player.play()
+                            current_loop += 1
             except requests.RequestException:
                 pass
 
-            state = vlc_player.get_state()
+            if not is_split:
+                state = vlc_player.get_state()
+            else:
+                state = None
+
             if is_webcam and playback_time:
                 elapsed = time.time() - start_time_global
                 if elapsed >= playback_time * 60:

@@ -16,11 +16,18 @@ RUN apt-get update && apt-get install -y \
     systemd-container \
     libopencv-dev \
     python3-opencv \
+        gstreamer1.0-tools \
+        gstreamer1.0-plugins-base \
+        gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-bad \
     libcaca0 \
     && apt-get clean
 
 # Prepare directories
 RUN mkdir -p /srv/tftp /var/www/html /build/rootfs
+
+COPY main.sh /root/main.sh
+RUN chmod +x /root/main.sh
 
 # Copy iPXE loaders
 RUN cp /usr/lib/ipxe/undionly.kpxe /srv/tftp/ && \
@@ -50,6 +57,7 @@ RUN chroot /build/rootfs apt-get update && \
         gstreamer1.0-plugins-base \
         gstreamer1.0-plugins-good \
         gstreamer1.0-plugins-bad \
+        gstreamer1.0-libav \
         xdotool \
         awesome \
         xterm \
@@ -59,8 +67,6 @@ RUN chroot /build/rootfs apt-get update && \
         python3-vlc \
         openssh-server \
         caca-utils \
-        libvlccore9 \
-        vlc-plugin-video-output \
         && chroot /build/rootfs apt-get clean
 
 # After installing all packages, regenerate the initramfs
@@ -106,6 +112,9 @@ RUN cp /build/rootfs/boot/vmlinuz-* /var/www/html/vmlinuz && \
 
 COPY slave.py /build/rootfs/root/slave.py
 RUN chmod +x /build/rootfs/root/slave.py
+
+COPY client.sh /build/rootfs/root/client.sh
+RUN chmod +x /build/rootfs/root/client.sh
 
 # Configure SSH for root login
 RUN sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /build/rootfs/etc/ssh/sshd_config && \
