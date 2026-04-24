@@ -100,10 +100,11 @@ def cleanup_vlc():
 def run_ascii_video(video_url):
     global ascii_running
     pygame.init()
-    cols = VIDEO_WIDTH // CELL_WIDTH
-    rows = VIDEO_HEIGHT // CELL_HEIGHT
-    screen = pygame.display.set_mode((VIDEO_WIDTH, VIDEO_HEIGHT))
-    pygame.display.set_caption("ASCII Video Stream")
+    info = pygame.display.Info()
+    screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.FULLSCREEN)
+    pygame.mouse.set_visible(False)
+    cols = info.current_w // CELL_WIDTH
+    rows = info.current_h // CELL_HEIGHT
     font = pygame.font.SysFont("Courier", 10, bold=True)
     clock = pygame.time.Clock()
 
