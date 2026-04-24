@@ -98,6 +98,8 @@ COPY rc.lua /build/rootfs/root/.config/awesome/rc.lua
 # Automatically start X on login (root will be logged in automatically)
 # Select window manager via WINDOW_MANAGER env var (mpv or awesome, default: mpv)
 RUN printf '#!/bin/sh\n\
+        export SDL_AUDIODRIVER=pulseaudio\n\
+        (sleep 3 && /usr/bin/pulseaudio --start --log-target=syslog 2>/dev/null) &\n\
         (sleep 5 && /usr/sbin/sshd) &\n\
         ln -sf /root/.xinitrc.awesome /root/.xinitrc\n\
         exec startx\n\
