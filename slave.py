@@ -97,6 +97,19 @@ def cleanup_vlc():
     print("[CLEANUP] Old VLC/ASCII stopped")
 
 
+def show_black_screen(delay=5):
+    """Show black screen for delay seconds during transition."""
+    print(f"[TRANSITION] Showing black screen for {delay}s...")
+    pygame.init()
+    info = pygame.display.Info()
+    screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.FULLSCREEN)
+    screen.fill((0, 0, 0))
+    pygame.display.flip()
+    time.sleep(delay)
+    pygame.quit()
+    print("[TRANSITION] Black screen done, starting new playback...")
+
+
 def run_ascii_video(video_url):
     global ascii_running
     pygame.init()
@@ -291,9 +304,11 @@ def main():
                                 print("[SPLIT] Stopping client.sh and gst-launch...")
                                 subprocess.run(['pkill', '-9', '-f', 'client.sh'], check=False)
                                 subprocess.run(['pkill', '-9', '-f', 'gst-launch'], check=False)
+                                show_black_screen(5)
                             else:
                                 print("[SPLIT] Stopping VLC/ASCII, switching to split mode...")
                                 cleanup_vlc()
+                                show_black_screen(5)
                         if is_split:
                             print("[SPLIT] Starting client.sh...")
                             resp = requests.get(video_url, timeout=10)

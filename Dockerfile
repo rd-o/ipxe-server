@@ -26,8 +26,8 @@ RUN apt-get update && apt-get install -y \
 # Prepare directories
 RUN mkdir -p /srv/tftp /var/www/html /build/rootfs
 
-COPY main.sh /root/main.sh
-RUN chmod +x /root/main.sh
+#COPY main.sh /root/main.sh
+#RUN chmod +x /root/main.sh
 
 # Copy iPXE loaders
 RUN cp /usr/lib/ipxe/undionly.kpxe /srv/tftp/ && \

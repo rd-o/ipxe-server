@@ -73,19 +73,20 @@ def load_rules(set_num):
 
 
 def detect_webcam():
-    """Detect available webcam."""
+    """Detect available webcam. Returns the last device if multiple, or the only one."""
     global webcam_device
     try:
         result = subprocess.run(
             ["v4l2-ctl", "--list-devices"],
             capture_output=True, text=True, timeout=5
         )
+        devices = []
         for line in result.stdout.split('\n'):
             if '/dev/video' in line:
-                for dev_line in result.stdout.split('\n'):
-                    if '/dev/video' in dev_line:
-                        webcam_device = dev_line.strip()
-                        return webcam_device
+                devices.append(line.strip())
+        if devices:
+            webcam_device = devices[-1]
+            return webcam_device
     except Exception as e:
         print(f"Webcam detection failed: {e}")
     return None
@@ -370,15 +371,7 @@ def webcam_stream():
                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
-@app.route('/client')
-def serve_client_script():
-    """Serve the client.sh script for split video mode."""
-    script_path = os.path.join(os.path.dirname(__file__), 'client.sh')
-    if not os.path.exists(script_path):
-        return "client.sh not found", 404
-    return send_from_directory(os.path.dirname(__file__), 'client.sh',
-                          mimetype='application/x-shellscript',
-                          as_attachment=True)
+
 
 
 # ----------------------------------------------------------------------
