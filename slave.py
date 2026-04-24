@@ -10,14 +10,25 @@ import time
 import os
 import uuid
 import subprocess
+import threading
 import requests
 import vlc
+import cv2
+import pygame
+import numpy as np
 
 # ----------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------
 MASTER_URL = "http://192.168.10.1:8000"   # CHANGE THIS
 POLL_INTERVAL = 0.5                       # seconds between /assign requests
+
+# ASCII art configuration
+ASCII_CHARS = "@#S%?*+;:,."
+CELL_WIDTH = 6
+CELL_HEIGHT = 10
+VIDEO_WIDTH = 800
+VIDEO_HEIGHT = 600
 
 
 def prevent_sleep():
@@ -55,11 +66,17 @@ def get_mac_address():
 # ----------------------------------------------------------------------
 vlc_instance = None
 vlc_player = None
+ascii_thread = None
+ascii_running = False
 
 
 def cleanup_vlc():
-    global vlc_instance, vlc_player
-    print("[CLEANUP] Stopping old VLC...")
+    global vlc_instance, vlc_player, ascii_thread, ascii_running
+    print("[CLEANUP] Stopping old VLC or ASCII...")
+    if ascii_running:
+        ascii_running = False
+        if ascii_thread and ascii_thread.is_alive():
+            ascii_thread.join(timeout=2)
     if vlc_player:
         try:
             vlc_player.stop()
@@ -77,28 +94,61 @@ def cleanup_vlc():
     for _ in range(3):
         subprocess.run(['pkill', '-9', 'vlc'], check=False)
         time.sleep(0.2)
-    print("[CLEANUP] Old VLC stopped")
+    print("[CLEANUP] Old VLC/ASCII stopped")
+
+
+def run_ascii_video(video_url):
+    global ascii_running
+    pygame.init()
+    cols = VIDEO_WIDTH // CELL_WIDTH
+    rows = VIDEO_HEIGHT // CELL_HEIGHT
+    screen = pygame.display.set_mode((VIDEO_WIDTH, VIDEO_HEIGHT))
+    pygame.display.set_caption("ASCII Video Stream")
+    font = pygame.font.SysFont("Courier", 10, bold=True)
+    clock = pygame.time.Clock()
+
+    cap = cv2.VideoCapture(video_url)
+    ascii_running = True
+
+    while ascii_running:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                ascii_running = False
+                break
+
+        screen.fill((0, 0, 0))
+
+        small_frame = cv2.resize(frame, (cols, rows))
+        gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+        indices = (gray / 255 * (len(ASCII_CHARS) - 1)).astype(int)
+
+        for y in range(rows):
+            for x in range(cols):
+                char = ASCII_CHARS[indices[y, x]]
+                char_surf = font.render(char, True, (0, 255, 0))
+                screen.blit(char_surf, (x * CELL_WIDTH, y * CELL_HEIGHT))
+
+        pygame.display.flip()
+        clock.tick(30)
+
+    cap.release()
+    pygame.quit()
 
 
 def create_vlc(ascii_mode):
-    global vlc_instance, vlc_player
+    global vlc_instance, vlc_player, ascii_thread, ascii_running
     vlc_opts = ["--no-audio", "--no-video-title-show"]
     if ascii_mode:
-        try:
-            result = subprocess.run(["which", "cacaview"], capture_output=True, text=True, timeout=2)
-            if result.returncode != 0:
-                ascii_mode = False
-                print("[VLC] caca not available, using fullscreen")
-        except:
-            ascii_mode = False
-        if ascii_mode:
-            vlc_opts.extend(["--vout", "caca"])
+        vlc_opts.append("--fullscreen")
     else:
         vlc_opts.append("--fullscreen")
     vlc_instance = vlc.Instance(*vlc_opts)
     vlc_player = vlc_instance.media_player_new()
-    if not ascii_mode:
-        vlc_player.set_fullscreen(True)
+    vlc_player.set_fullscreen(True)
     time.sleep(0.2)
 
 
@@ -178,7 +228,12 @@ def main():
         subprocess.Popen(['/root/client.sh'])
     else:
         cleanup_vlc()
-        create_vlc(is_ascii)
+        if is_ascii:
+            print("[ASCII] Starting ASCII video stream...")
+            ascii_thread = threading.Thread(target=run_ascii_video, args=(video_url,))
+            ascii_thread.start()
+        else:
+            create_vlc(is_ascii)
 
         def set_and_play(url, position=None):
             media = vlc_instance.media_new(url)
@@ -200,7 +255,7 @@ def main():
 
     # 6. Start playback
     print("Playback started!")
-    if not is_split:
+    if not is_split and not is_ascii:
         set_and_play(video_url)
         current_loop += 1
 
@@ -236,7 +291,7 @@ def main():
                                 subprocess.run(['pkill', '-9', '-f', 'client.sh'], check=False)
                                 subprocess.run(['pkill', '-9', '-f', 'gst-launch'], check=False)
                             else:
-                                print("[SPLIT] Stopping VLC, switching to split mode...")
+                                print("[SPLIT] Stopping VLC/ASCII, switching to split mode...")
                                 cleanup_vlc()
                         if is_split:
                             print("[SPLIT] Starting client.sh...")
@@ -247,9 +302,14 @@ def main():
                             subprocess.Popen(['/root/client.sh'])
                         else:
                             cleanup_vlc()
-                            create_vlc(is_ascii)
-                            set_and_play(video_url)
-                            current_loop += 1
+                            if is_ascii:
+                                print("[ASCII] Starting ASCII video stream...")
+                                ascii_thread = threading.Thread(target=run_ascii_video, args=(video_url,))
+                                ascii_thread.start()
+                            else:
+                                create_vlc(is_ascii)
+                                set_and_play(video_url)
+                                current_loop += 1
 
                     if new_video_url != video_url or (is_ascii != data.get("is_ascii", False)) or (is_split != data.get("is_split", False)):
                         print(f"New command received: video={new_video_url}, start_time={new_start_time}, ascii={data.get('is_ascii', False)}, split={data.get('is_split', False)}, old_is_split={is_split}")
@@ -267,7 +327,7 @@ def main():
                                 subprocess.run(['pkill', '-9', '-f', 'client.sh'], check=False)
                                 subprocess.run(['pkill', '-9', '-f', 'gst-launch'], check=False)
                             else:
-                                print("[SPLIT] Stopping VLC, switching to split mode...")
+                                print("[SPLIT] Stopping VLC/ASCII, switching to split mode...")
                                 cleanup_vlc()
                         if is_split:
                             print("[SPLIT] Starting client.sh...")
@@ -278,9 +338,14 @@ def main():
                             subprocess.Popen(['/root/client.sh'])
                         else:
                             cleanup_vlc()
-                            create_vlc(is_ascii)
-                            set_and_play(video_url)
-                            current_loop += 1
+                            if is_ascii:
+                                print("[ASCII] Starting ASCII video stream...")
+                                ascii_thread = threading.Thread(target=run_ascii_video, args=(video_url,))
+                                ascii_thread.start()
+                            else:
+                                create_vlc(is_ascii)
+                                set_and_play(video_url)
+                                current_loop += 1
                     elif new_start_time != start_time:
                         start_time = new_start_time
                         now = time.time() + time_offset
@@ -289,13 +354,13 @@ def main():
                             time.sleep(delay)
                             while (time.time() + time_offset) < start_time:
                                 pass
-                        if not is_split:
+                        if not is_split and not is_ascii:
                             vlc_player.play()
                             current_loop += 1
             except requests.RequestException:
                 pass
 
-            if not is_split:
+            if not is_split and not is_ascii:
                 state = vlc_player.get_state()
             else:
                 state = None

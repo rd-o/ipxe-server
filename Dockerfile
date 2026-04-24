@@ -67,6 +67,8 @@ RUN chroot /build/rootfs apt-get update && \
         python3-vlc \
         openssh-server \
         caca-utils \
+        python3-opencv \
+        python3-pygame \
         && chroot /build/rootfs apt-get clean
 
 # After installing all packages, regenerate the initramfs
