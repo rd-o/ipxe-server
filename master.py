@@ -111,11 +111,6 @@ def reset_playback():
     next_set = get_next_set(current_set)
     start_time = time.time() + 2.0
     reset_trigger += 1
-    if split_enabled:
-        video_path = os.path.join(VIDEO_ROOT, current_set, "video.mp4")
-        start_split(video_path)
-    else:
-        stop_split()
     print(f"[RESET] Playback reset for new client, will start in 2s, loop={loop_count}, next={next_set}")
 
 
@@ -221,15 +216,18 @@ def start_playback():
 
     load_rules(set_num)
 
+    print(f"[START] Set {set_num}: SPLIT={split_enabled}, WEBCAM={webcam_enabled}")
     current_set = set_num
     next_set = get_next_set(current_set)
     start_time = time.time() + START_DELAY
     if split_enabled:
         video_path = os.path.join(VIDEO_ROOT, current_set, "video.mp4")
+        print(f"[SPLIT] Starting with video path: {video_path}")
         start_split(video_path)
     else:
+        print(f"[START] stop_split() called - split_enabled is: {split_enabled}")
         stop_split()
-    print(f"[START] Set {current_set} will play at {start_time} "
+    print(f"[START] Set {current_set} will play"
           f"(in {START_DELAY} seconds), loop={loop_count}, next={next_set}")
 
     return jsonify({
@@ -396,6 +394,7 @@ current_split_video = None
 def stop_split():
     global main_sh_process
     if main_sh_process:
+        print("[SPLIT] Stopping main.sh process...")
         main_sh_process.terminate()
         main_sh_process = None
 

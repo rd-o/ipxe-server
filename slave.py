@@ -221,6 +221,7 @@ def main():
 
                     if new_reset_trigger != last_reset_trigger:
                         print(f"New client connected, resetting playback...")
+                        was_split = is_split
                         is_split = data.get("is_split", False)
                         video_url = new_video_url
                         start_time = new_start_time
@@ -229,8 +230,16 @@ def main():
                         is_webcam = data.get("is_webcam", False)
                         current_loop = 0
                         last_reset_trigger = new_reset_trigger
+                        if is_split != was_split:
+                            if was_split:
+                                print("[SPLIT] Stopping client.sh and gst-launch...")
+                                subprocess.run(['pkill', '-9', '-f', 'client.sh'], check=False)
+                                subprocess.run(['pkill', '-9', '-f', 'gst-launch'], check=False)
+                            else:
+                                print("[SPLIT] Stopping VLC, switching to split mode...")
+                                cleanup_vlc()
                         if is_split:
-                            subprocess.run(['pkill', '-9', '-f', 'client.sh'], check=False)
+                            print("[SPLIT] Starting client.sh...")
                             resp = requests.get(video_url, timeout=10)
                             with open('/root/client.sh', 'wb') as f:
                                 f.write(resp.content)
@@ -243,7 +252,8 @@ def main():
                             current_loop += 1
 
                     if new_video_url != video_url or (is_ascii != data.get("is_ascii", False)) or (is_split != data.get("is_split", False)):
-                        print(f"New command received: video={new_video_url}, start_time={new_start_time}, ascii={data.get('is_ascii', False)}, split={data.get('is_split', False)}")
+                        print(f"New command received: video={new_video_url}, start_time={new_start_time}, ascii={data.get('is_ascii', False)}, split={data.get('is_split', False)}, old_is_split={is_split}")
+                        was_split = is_split
                         is_split = data.get("is_split", False)
                         video_url = new_video_url
                         start_time = new_start_time
@@ -251,8 +261,16 @@ def main():
                         is_ascii = data.get("is_ascii", False)
                         is_webcam = data.get("is_webcam", False)
                         current_loop = 0
+                        if is_split != was_split:
+                            if was_split:
+                                print("[SPLIT] Stopping client.sh and gst-launch...")
+                                subprocess.run(['pkill', '-9', '-f', 'client.sh'], check=False)
+                                subprocess.run(['pkill', '-9', '-f', 'gst-launch'], check=False)
+                            else:
+                                print("[SPLIT] Stopping VLC, switching to split mode...")
+                                cleanup_vlc()
                         if is_split:
-                            subprocess.run(['pkill', '-9', '-f', 'client.sh'], check=False)
+                            print("[SPLIT] Starting client.sh...")
                             resp = requests.get(video_url, timeout=10)
                             with open('/root/client.sh', 'wb') as f:
                                 f.write(resp.content)
