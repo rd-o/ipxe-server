@@ -115,7 +115,16 @@ def run_ascii_video(video_url):
     import requests
     import sys
 
+    pygame.init()
+    info = pygame.display.Info()
+    screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.FULLSCREEN)
+    pygame.mouse.set_visible(False)
+    font = pygame.font.SysFont("Courier", 10, bold=True)
+    clock = pygame.time.Clock()
+
     ascii_running = True
+    cols = info.current_w // 6
+    rows = info.current_h // 10
 
     try:
         resp = requests.get(video_url, stream=True, timeout=30)
@@ -126,12 +135,16 @@ def run_ascii_video(video_url):
                 event, buf = buf.split("\n\n", 1)
                 if event.startswith("data: "):
                     ascii_text = event[6:]
-                    print("\033[2J\033[H", end="")
-                    print(ascii_text)
-                    sys.stdout.flush()
+                    screen.fill((0, 0, 0))
+                    for i, line in enumerate(ascii_text.split('\n')):
+                        text_surf = font.render(line, True, (0, 255, 0))
+                        screen.blit(text_surf, (0, i * 11))
+                    pygame.display.flip()
+                    clock.tick(15)
     except Exception as e:
         print(f"[ASCII] Error: {e}")
     finally:
+        pygame.quit()
         ascii_running = False
 
 
