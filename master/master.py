@@ -10,6 +10,7 @@ import json
 import subprocess
 import threading
 import cv2
+import numpy as np
 from flask import Flask, request, jsonify, send_from_directory, Response
 
 app = Flask(__name__)
@@ -35,6 +36,9 @@ playback_time = None       # playback time in minutes
 webcam_device = None       # detected webcam device
 ascii_enabled = False      # ASCII art mode
 split_enabled = False      # Split video mode (gst-launch)
+_start_called = False      # Tracks if /start was explicitly called
+
+ASCII_CHARS = "@#S%?*+;:,. "
 
 # ----------------------------------------------------------------------
 # Helper functions
@@ -70,11 +74,14 @@ def load_rules(set_num):
                     split_enabled = int(line.split('=', 1)[1]) == 1
     except FileNotFoundError:
         loop_count = 1
+    import sys
+    print(f"[DEBUG load_rules] set={set_num}, webcam={webcam_enabled}, ascii={ascii_enabled}", flush=True)
 
 
 def detect_webcam():
-    """Detect available webcam. Returns the last device if multiple, or the only one."""
+    """Detect available webcam. Returns the last openable device or None."""
     global webcam_device
+    print("[DEBUG] detect_webcam called, webcam_enabled=", webcam_enabled)
     try:
         result = subprocess.run(
             ["v4l2-ctl", "--list-devices"],
@@ -84,11 +91,23 @@ def detect_webcam():
         for line in result.stdout.split('\n'):
             if '/dev/video' in line:
                 devices.append(line.strip())
-        if devices:
-            webcam_device = devices[-1]
-            return webcam_device
+        print(f"[DEBUG] Found devices: {devices}")
+        for device in reversed(devices):
+            print(f"[DEBUG] Trying device: {device}")
+            try:
+                cap = cv2.VideoCapture(device)
+                if cap.isOpened():
+                    cap.release()
+                    webcam_device = device
+                    print(f"[DEBUG] Selected device: {webcam_device}")
+                    return webcam_device
+                else:
+                    cap.release()
+            except Exception as e:
+                print(f"[DEBUG] Failed to open {device}: {e}")
     except Exception as e:
         print(f"Webcam detection failed: {e}")
+    print("[DEBUG] No webcam found")
     return None
 
 
@@ -110,8 +129,9 @@ def reset_playback():
         current_set = "001"
     load_rules(current_set)
     next_set = get_next_set(current_set)
-    start_time = time.time() + 2.0
-    reset_trigger += 1
+    if not _start_called:
+        start_time = time.time() + 2.0
+        reset_trigger += 1
     print(f"[RESET] Playback reset for new client, will start in 2s, loop={loop_count}, next={next_set}")
 
 
@@ -165,21 +185,26 @@ def assign():
         return jsonify({"error": "Not registered"}), 403
 
     if start_time is None or current_set is None:
+        import sys
+        print(f"[DEBUG assign] waiting: start_time={start_time}, current_set={current_set}", flush=True)
         return jsonify({"status": "waiting"}), 200
 
     if time.time() > start_time + 10:
+        import sys
+        print(f"[DEBUG assign] waiting: start_time expired", flush=True)
         return jsonify({"status": "waiting"}), 200
 
     role = registered_clients[mac]["role"]
+    print(f"[DEBUG assign] split={split_enabled}, webcam={webcam_enabled}, ascii={ascii_enabled}")
 
     if split_enabled:
         video_path = os.path.join(VIDEO_ROOT, current_set, "video.mp4")
         reset_split(video_path)
         video_url = f"http://{request.host}/client"
+    elif webcam_enabled and ascii_enabled:
+        video_url = f"http://{request.host}/ascii"
+        print(f"[DEBUG assign] Using /ascii URL: {video_url}")
     elif webcam_enabled:
-        if detect_webcam() is None:
-            print(f"[WARN] No webcam detected, skipping to next set")
-            return jsonify({"status": "no_webcam", "next_set": get_next_set(current_set)}), 200
         video_url = f"http://{request.host}/webcam"
     else:
         video_url = f"http://{request.host}/videos/{current_set}/{role}.mp4"
@@ -218,9 +243,13 @@ def start_playback():
     load_rules(set_num)
 
     print(f"[START] Set {set_num}: SPLIT={split_enabled}, WEBCAM={webcam_enabled}")
+    global _start_called
+    _start_called = True
     current_set = set_num
     next_set = get_next_set(current_set)
     start_time = time.time() + START_DELAY
+    if not webcam_enabled:
+        close_webcam()
     if split_enabled:
         video_path = os.path.join(VIDEO_ROOT, current_set, "video.mp4")
         print(f"[SPLIT] Starting with video path: {video_path}")
@@ -294,42 +323,105 @@ _webcam_capture = None
 _webcam_device = None
 _clients_lock = threading.Lock()
 _clients = []
+_ascii_clients_lock = threading.Lock()
+_ascii_clients = []
+
+
+def close_webcam():
+    """Release webcam capture and clear all client queues."""
+    global _webcam_capture, _clients, _ascii_clients
+    if _webcam_capture is not None:
+        _webcam_capture.release()
+        _webcam_capture = None
+        print("[WEBCAM] Capture stopped")
+    with _clients_lock:
+        _clients = []
+    with _ascii_clients_lock:
+        _ascii_clients = []
+
+
+def frame_to_ascii(frame, cols, rows):
+    """Convert frame to ASCII art string."""
+    small_frame = cv2.resize(frame, (cols, rows))
+    gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+    indices = (gray / 255 * (len(ASCII_CHARS) - 1)).astype(int)
+    lines = []
+    for y in range(rows):
+        line = ''.join(ASCII_CHARS[indices[y, x]] for x in range(cols))
+        lines.append(line)
+    return '\n'.join(lines)
 
 
 def _capture_frames():
     """Background thread that captures frames and broadcasts to all clients."""
     global _webcam_capture, _webcam_device
+    import sys
+    print(f"[DEBUG] _capture_frames started, webcam_enabled={webcam_enabled}, ascii_enabled={ascii_enabled}", flush=True)
+    consecutive_failures = 0
     while True:
-        if _webcam_capture is None:
-            device = detect_webcam()
-            if device is None:
+        try:
+            if _webcam_capture is None:
+                if webcam_enabled:
+                    print("[DEBUG] Attempting to open webcam...", flush=True)
+                    device = detect_webcam()
+                    print(f"[DEBUG] detect_webcam returned: {device}", flush=True)
+                    if device is not None:
+                        _webcam_capture = cv2.VideoCapture(device, cv2.CAP_V4L2)
+                        print(f"[DEBUG] VideoCapture created, isOpened={_webcam_capture.isOpened()}", flush=True)
+                        if _webcam_capture.isOpened():
+                            _webcam_device = device
+                            print(f"[WEBCAM] Capture started on {device}", flush=True)
+                            consecutive_failures = 0
+                        else:
+                            _webcam_capture.release()
+                            _webcam_capture = None
+                            print("[WEBCAM] Cannot open webcam", flush=True)
+                    else:
+                        print("[WEBCAM] No webcam detected", flush=True)
+                else:
+                    print("[DEBUG] webcam_enabled is False, skipping", flush=True)
+                if _webcam_capture is None:
+                    print("[DEBUG] Sleeping 0.5s, no capture device", flush=True)
+                    time.sleep(0.5)
+                    continue
+
+            ret, frame = _webcam_capture.read()
+            if not ret:
+                consecutive_failures += 1
+                print(f"[DEBUG] Frame read failed ({consecutive_failures})", flush=True)
+                if consecutive_failures >= 5:
+                    print("[WEBCAM] Too many failures, releasing capture", flush=True)
+                    _webcam_capture.release()
+                    _webcam_capture = None
+                    consecutive_failures = 0
                 time.sleep(0.1)
                 continue
-            _webcam_capture = cv2.VideoCapture(device)
-            if not _webcam_capture.isOpened():
-                print(f"[ERROR] Cannot open webcam {device}")
-                _webcam_capture = None
-                time.sleep(0.1)
-                continue
-            _webcam_device = device
-            print(f"[WEBCAM] Capture started on {device}")
+            consecutive_failures = 0
 
-        ret, frame = _webcam_capture.read()
-        if not ret:
-            _webcam_capture.release()
-            _webcam_capture = None
-            time.sleep(0.1)
-            continue
+            if ascii_enabled:
+                cols, rows = 160, 45
+                ascii_text = frame_to_ascii(frame, cols, rows)
+                with _ascii_clients_lock:
+                    for client in _ascii_clients[:]:
+                        try:
+                            client.put(ascii_text)
+                        except:
+                            pass
 
-        _, jpeg = cv2.imencode('.jpg', frame)
-        frame_bytes = jpeg.tobytes()
+            with _clients_lock:
+                for client in _clients[:]:
+                    try:
+                        _, jpeg = cv2.imencode('.jpg', frame)
+                        client.put(jpeg.tobytes())
+                    except:
+                        pass
 
-        with _clients_lock:
-            for client in _clients[:]:
-                try:
-                    client.put(frame_bytes)
-                except:
-                    pass
+            time.sleep(1.0 / 15.0)
+        except Exception as e:
+            print(f"[DEBUG] Exception in _capture_frames: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            time.sleep(1)
 
 
 def _start_capture_thread():
@@ -369,6 +461,38 @@ def webcam_stream():
 
     return Response(generate(),
                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
+
+@app.route('/ascii')
+def ascii_stream():
+    """Serve ASCII art stream to clients."""
+    import queue
+
+    _start_capture_thread()
+
+    ascii_queue = queue.Queue(maxsize=2)
+    ascii_queue.ascii_cache = ""
+    with _ascii_clients_lock:
+        _ascii_clients.append(ascii_queue)
+
+    def generate():
+        try:
+            while True:
+                try:
+                    ascii_text = ascii_queue.get(timeout=5)
+                    ascii_queue.ascii_cache = ascii_text
+                    yield f"data: {ascii_text}\n\n"
+                except queue.Empty:
+                    break
+        finally:
+            with _ascii_clients_lock:
+                try:
+                    _ascii_clients.remove(ascii_queue)
+                except ValueError:
+                    pass
+
+    return Response(generate(),
+                   mimetype='text/event-stream')
 
 
 
@@ -432,4 +556,4 @@ if __name__ == '__main__':
     print("  POST /start   (JSON: {\"set\": \"001\"})")
     print("  GET  /status")
     print("\nServing videos from:", os.path.abspath(VIDEO_ROOT))
-    app.run(host='0.0.0.0', port=8000, debug=False)
+    app.run(host='0.0.0.0', port=8000, debug=True)

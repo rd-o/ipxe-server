@@ -112,45 +112,27 @@ def show_black_screen(delay=5):
 
 def run_ascii_video(video_url):
     global ascii_running
-    pygame.init()
-    info = pygame.display.Info()
-    screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.FULLSCREEN)
-    pygame.mouse.set_visible(False)
-    cols = info.current_w // CELL_WIDTH
-    rows = info.current_h // CELL_HEIGHT
-    font = pygame.font.SysFont("Courier", 10, bold=True)
-    clock = pygame.time.Clock()
+    import requests
+    import sys
 
-    cap = cv2.VideoCapture(video_url)
     ascii_running = True
 
-    while ascii_running:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                ascii_running = False
-                break
-
-        screen.fill((0, 0, 0))
-
-        small_frame = cv2.resize(frame, (cols, rows))
-        gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
-        indices = (gray / 255 * (len(ASCII_CHARS) - 1)).astype(int)
-
-        for y in range(rows):
-            for x in range(cols):
-                char = ASCII_CHARS[indices[y, x]]
-                char_surf = font.render(char, True, (0, 255, 0))
-                screen.blit(char_surf, (x * CELL_WIDTH, y * CELL_HEIGHT))
-
-        pygame.display.flip()
-        clock.tick(30)
-
-    cap.release()
-    pygame.quit()
+    try:
+        resp = requests.get(video_url, stream=True, timeout=30)
+        buf = ""
+        for chunk in resp.iter_content(chunk_size=256, decode_unicode=True):
+            buf += chunk
+            while "\n\n" in buf:
+                event, buf = buf.split("\n\n", 1)
+                if event.startswith("data: "):
+                    ascii_text = event[6:]
+                    print("\033[2J\033[H", end="")
+                    print(ascii_text)
+                    sys.stdout.flush()
+    except Exception as e:
+        print(f"[ASCII] Error: {e}")
+    finally:
+        ascii_running = False
 
 
 def create_vlc(ascii_mode):
